@@ -1,0 +1,373 @@
+cat > /tmp/test_values.yaml << 'EOF'
+fullnameOverride: loki
+deploymentMode: Distributed
+
+loki:
+  image:
+    tag: "3.6.1"
+  podAnnotations:
+    loki.io/ignore: "true" # disabled log shipping to loki
+  auth_enabled: false
+  server:
+    http_server_read_timeout: 30m
+    http_server_write_timeout: 30m
+    http_server_idle_timeout: 30m
+    grpc_server_max_recv_msg_size: 134217728 # 128 MiB
+    grpc_server_max_send_msg_size: 134217728 # 128 MiB
+  limits_config:
+    max_line_size: 1MB
+    max_line_size_truncate: true # Truncate instead of dropping
+    allow_structured_metadata: false
+    retention_period: 90d
+    ingestion_rate_mb: 200
+    ingestion_burst_size_mb: 1024
+    per_stream_rate_limit: 50MB
+    per_stream_rate_limit_burst: 100MB
+    max_global_streams_per_user: 20000
+    unordered_writes: true
+    reject_old_samples: true
+    reject_old_samples_max_age: 2h
+    creation_grace_period: 10m
+    split_queries_by_interval: 30m
+    query_timeout: 30m
+    max_chunks_per_query: 3000000
+    max_query_series: 20000
+    max_query_parallelism: 256
+    tsdb_max_query_parallelism: 1024 # 4 x max_query_parallelism
+    tsdb_max_bytes_per_shard: 5GB
+    max_concurrent_tail_requests: 10
+    cardinality_limit: 100000
+    max_streams_matchers_per_query: 2000
+    increment_duplicate_timestamp: true
+    retention_stream:
+      - priority: 1
+        period: 7d
+        selector: '{cluster=~"(eks|gke)-(dev|int)"}'
+      - priority: 2
+        period: 15d
+        selector: '{cluster=~"(eks|gke)-stg"}'
+  chunksCache:
+    defaultValidity: 24h
+    writebackParallelism: 4
+    writebackBuffer: 500000
+    writebackSizeLimit: 1GB
+    batchSize: 4
+    parallelism: 5
+  storage:
+    bucketNames:
+      chunks: quandoo-loki-svc
+      ruler: quandoo-loki-svc
+    type: s3
+    s3:
+      s3: s3://eu-west-1/quandoo-loki-svc
+  schemaConfig:
+    configs:
+      - from: "2024-10-01"
+        store: tsdb
+        object_store: aws
+        schema: v13
+        index:
+          prefix: loki_index_
+          period: 24h
+  compactor:
+    working_directory: /data/retention
+    retention_enabled: true
+    delete_request_store: aws
+  pattern_ingester:
+    enabled: true
+  analytics:
+    reporting_enabled: false
+  ui:
+    enabled: true
+  query_range:
+    results_cache:
+      compression: snappy
+  querier:
+    tail_max_duration: 15m
+    query_ingesters_within: 2h
+    max_concurrent: 8
+    multi_tenant_queries_enabled: true
+  ingester:
+    chunk_idle_period: 30m
+    chunk_retain_period: 1m
+    chunk_target_size: 2097152 # 2MB
+    autoforget_unhealthy: true
+    max_chunk_age: 2h
+    chunk_encoding: snappy
+    sync_period: 0s
+    sync_min_utilization: 0
+    wal:
+      dir: /var/loki/wal
+      flush_on_shutdown: true
+      checkpoint_duration: 5m
+      replay_memory_ceiling: 1GB
+  distributor:
+    max_recv_msg_size: 1073741824 # 1 GiB
+
+test:
+  enabled: false
+
+lokiCanary:
+  enabled: false
+
+serviceAccount:
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::326629179249:role/irsa/loki
+
+gateway:
+  replicas: 2
+  verboseLogging: false
+  nginxConfig:
+    clientMaxBodySize: "0"
+    logFormat: |-
+      main '$remote_addr - $remote_user [$time_local]  $status '
+              '"$request" $body_bytes_sent "$http_referer" '
+              '"$http_user_agent" "$http_x_forwarded_for" '
+               'rt=$request_time urt=$upstream_response_time '
+               'uaddr=$upstream_addr ustatus=$upstream_status';
+  resources:
+    requests:
+      cpu: 50m
+      memory: 100Mi
+    limits:
+      memory: 100Mi
+  service:
+    labels:
+      prometheus.io/service-monitor: "false"
+  nodeSelector:
+    k8s.quandoo.com/arch: arm64
+    topology.kubernetes.io/zone: eu-west-1a
+  tolerations:
+    - key: "k8s.quandoo.com/arch"
+      operator: "Equal"
+      value: "arm64"
+      effect: "NoSchedule"
+  ingress:
+    enabled: true
+    ingressClassName: alb
+    annotations:
+      alb.ingress.kubernetes.io/target-type: ip
+      alb.ingress.kubernetes.io/ssl-redirect: "443"
+      alb.ingress.kubernetes.io/scheme: internet-facing
+      alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS": 443}]'
+      alb.ingress.kubernetes.io/healthcheck-path: /
+      alb.ingress.kubernetes.io/load-balancer-attributes: 'idle_timeout.timeout_seconds=1800,routing.http2.enabled=true,routing.http.drop_invalid_header_fields.enabled=true'
+      alb.ingress.kubernetes.io/inbound-cidrs: >-
+        185.71.171.146/32, 62.214.92.194/32, 34.74.90.64/28, 34.74.226.0/24, 54.247.185.70/32, 35.241.221.249/32, 79.125.108.112/32, 78.46.129.157/32, 78.47.108.79/32, 54.216.154.8/32, 34.243.90.210/32, 108.128.244.149/32, 99.80.56.55/32, 34.76.179.151/32, 34.79.245.179/32, 34.140.230.132/32, 34.78.222.33/32, 52.208.1.174/32
+    hosts:
+      - host: loki-gateway.svc.quandoo.com
+        paths:
+          - path: /
+            pathType: Prefix
+    tls:
+      - hosts:
+          - loki-gateway.svc.quandoo.com
+
+migrate:
+  fromDistributed:
+    enabled: true
+    memberlistService: loki-memberlist
+
+write:
+  replicas: 0
+
+read:
+  replicas: 0
+
+backend:
+  replicas: 0
+
+ingester:
+  replicas: 6
+  terminationGracePeriodSeconds: 600
+  zoneAwareReplication:
+    enabled: false
+  persistence:
+    enabled: true
+    claims:
+      - name: data
+        size: 70Gi
+        storageClass: gp3
+        accessModes:
+          - ReadWriteOnce
+  resources:
+    requests:
+      cpu: 2
+      memory: 6Gi
+    limits:
+      memory: 6Gi
+  nodeSelector:
+    k8s.quandoo.com/arch: arm64
+    topology.kubernetes.io/zone: eu-west-1a
+  tolerations:
+    - key: "k8s.quandoo.com/arch"
+      operator: "Equal"
+      value: "arm64"
+      effect: "NoSchedule"
+  affinity:
+    podAntiAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution: []
+
+distributor:
+  replicas: 2
+  maxUnavailable: 1
+  resources:
+    requests:
+      cpu: 2
+      memory: 2Gi
+    limits:
+      cpu: 4
+      memory: 2Gi
+  nodeSelector:
+    k8s.quandoo.com/arch: arm64
+    topology.kubernetes.io/zone: eu-west-1a
+  tolerations:
+    - key: "k8s.quandoo.com/arch"
+      operator: "Equal"
+      value: "arm64"
+      effect: "NoSchedule"
+
+querier:
+  replicas: 4
+  maxUnavailable: 1
+  resources:
+    requests:
+      cpu: 2
+      memory: 12Gi
+    limits:
+      cpu: 4
+      memory: 12Gi
+  nodeSelector:
+    k8s.quandoo.com/arch: arm64
+    topology.kubernetes.io/zone: eu-west-1a
+  tolerations:
+    - key: "k8s.quandoo.com/arch"
+      operator: "Equal"
+      value: "arm64"
+      effect: "NoSchedule"
+
+queryFrontend:
+  replicas: 2
+  maxUnavailable: 1
+  resources:
+    requests:
+      cpu: 50m
+      memory: 512Mi
+    limits:
+      memory: 512Mi
+  nodeSelector:
+    k8s.quandoo.com/arch: arm64
+    topology.kubernetes.io/zone: eu-west-1a
+  tolerations:
+    - key: "k8s.quandoo.com/arch"
+      operator: "Equal"
+      value: "arm64"
+      effect: "NoSchedule"
+
+queryScheduler:
+  replicas: 2
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 128Mi
+  nodeSelector:
+    k8s.quandoo.com/arch: arm64
+    topology.kubernetes.io/zone: eu-west-1a
+  tolerations:
+    - key: "k8s.quandoo.com/arch"
+      operator: "Equal"
+      value: "arm64"
+      effect: "NoSchedule"
+
+indexGateway:
+  replicas: 3
+  maxUnavailable: 1
+  resources:
+    requests:
+      cpu: 1
+      memory: 2Gi
+    limits:
+      memory: 2Gi
+  nodeSelector:
+    k8s.quandoo.com/arch: arm64
+    topology.kubernetes.io/zone: eu-west-1a
+  tolerations:
+    - key: "k8s.quandoo.com/arch"
+      operator: "Equal"
+      value: "arm64"
+      effect: "NoSchedule"
+
+compactor:
+  replicas: 2
+  persistence:
+    enabled: true
+    claims:
+      - name: data
+        size: 10Gi
+        storageClass: gp3
+        accessModes:
+          - ReadWriteOnce
+  resources:
+    requests:
+      cpu: 2
+      memory: 2Gi
+    limits:
+      cpu: 4
+      memory: 2Gi
+  extraVolumes:
+    - name: compactor-data
+      emptyDir: {}
+  extraVolumeMounts:
+    - name: compactor-data
+      mountPath: /data
+  nodeSelector:
+    k8s.quandoo.com/arch: arm64
+    topology.kubernetes.io/zone: eu-west-1a
+  tolerations:
+    - key: "k8s.quandoo.com/arch"
+      operator: "Equal"
+      value: "arm64"
+      effect: "NoSchedule"
+  affinity:
+    podAntiAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution: []
+
+ruler:
+  enabled: false
+
+memcached:
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 11211
+    runAsGroup: 11211
+    fsGroup: 11211
+
+resultsCache:
+  allocatedMemory: 1024 # in MB
+  maxItemMemory: 32 # in MB
+  connectionLimit: 16384
+  extraExtendedOptions: ext_wbuf_size=32,ext_threads=10,ext_max_sleep=10000,slab_automove_freeratio=0.10,ext_recache_rate=0
+  persistence:
+    enabled: true
+    storageSize: 10Gi
+    storageClass: gp3
+
+chunksCache:
+  allocatedMemory: 12288 # in MB
+  maxItemMemory: 32 # in MB
+  connectionLimit: 16384
+  extraExtendedOptions: ext_wbuf_size=32,ext_threads=10,ext_max_sleep=10000,slab_automove_freeratio=0.10,ext_recache_rate=0
+  persistence:
+    enabled: true
+    storageSize: 500Gi
+    storageClass: gp3
+
+# DEPRECATED
+monitoring:
+  serviceMonitor:
+    enabled: true
+
+
+EOF

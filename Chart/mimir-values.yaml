@@ -1,0 +1,355 @@
+fullnameOverride: mimir
+
+global:
+  podAnnotations:
+    loki.io/ignore: "true" # disabled log shipping to loki
+
+image:
+  repository: grafana/mimir
+  tag: 2.17.4
+
+serviceAccount:
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::326629179249:role/irsa/mimir
+
+mimir:
+  structuredConfig:
+    common:
+      storage:
+        backend: s3
+        s3:
+          endpoint: s3.eu-west-1.amazonaws.com
+          region: eu-west-1
+
+    blocks_storage:
+      s3:
+        bucket_name: quandoo-mimir-blocks-svc
+      tsdb:
+        # Reduced from default (3) to lower peak memory during WAL replay on ingester restart,
+        # preventing OOMKill when WAL has grown large (e.g. after a prolonged crash loop).
+        wal_replay_concurrency: 1
+
+    memberlist:
+      cluster_label: "mimir"
+      cluster_label_verification_disabled: true
+
+    limits:
+      # The maximum number of in-memory series per tenant, across the cluster before replication. 0 to disable.
+      max_global_series_per_user: 10000000 # [10M]
+
+      # Per-tenant ingestion rate limit in samples per second.
+      ingestion_rate: 330000 # [330K]
+
+      # Per-tenant allowed ingestion burst size (in number of samples).
+      ingestion_burst_size: 10000000 # [10M]
+
+      # Delete blocks containing samples older than the specified retention period.
+      compactor_blocks_retention_period: 182d # [6months]
+
+      # Maximum number of label names per series.
+      max_label_names_per_series: 50
+
+      # Allow samples up to 30 minutes out of order
+      out_of_order_time_window: 30m
+
+alertmanager:
+  enabled: false
+
+distributor:
+  replicas: 2
+
+  resources:
+    requests:
+      cpu: 1
+      memory: 4Gi
+    limits:
+      memory: 6Gi
+
+  nodeSelector:
+    k8s.quandoo.com/arch: arm64
+    topology.kubernetes.io/zone: eu-west-1c
+
+  tolerations:
+    - key: k8s.quandoo.com/arch
+      operator: Equal
+      value: arm64
+      effect: NoSchedule
+
+ingester:
+  replicas: 3
+
+  persistentVolume:
+    size: 50Gi
+
+  resources:
+    requests:
+      cpu: 1.5
+      memory: 16Gi
+    limits:
+      memory: 24Gi
+
+  zoneAwareReplication:
+    enabled: false
+
+  nodeSelector:
+    k8s.quandoo.com/arch: arm64
+    topology.kubernetes.io/zone: eu-west-1c
+
+  tolerations:
+    - key: k8s.quandoo.com/arch
+      operator: Equal
+      value: arm64
+      effect: NoSchedule
+
+overrides_exporter:
+  enabled: false
+
+ruler:
+  enabled: false
+
+querier:
+  replicas: 2
+
+  resources:
+    requests:
+      cpu: 625m
+      memory: 2Gi
+    limits:
+      memory: 4Gi
+
+  nodeSelector:
+    k8s.quandoo.com/arch: arm64
+    topology.kubernetes.io/zone: eu-west-1c
+
+  tolerations:
+    - key: k8s.quandoo.com/arch
+      operator: Equal
+      value: arm64
+      effect: NoSchedule
+
+query_frontend:
+  replicas: 2
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 768Mi
+    limits:
+      memory: 2Gi
+
+  nodeSelector:
+    k8s.quandoo.com/arch: arm64
+    topology.kubernetes.io/zone: eu-west-1c
+
+  tolerations:
+    - key: k8s.quandoo.com/arch
+      operator: Equal
+      value: arm64
+      effect: NoSchedule
+
+query_scheduler:
+  replicas: 2
+
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
+
+  nodeSelector:
+    k8s.quandoo.com/arch: arm64
+    topology.kubernetes.io/zone: eu-west-1c
+
+  tolerations:
+    - key: k8s.quandoo.com/arch
+      operator: Equal
+      value: arm64
+      effect: NoSchedule
+
+store_gateway:
+  replicas: 3
+
+  persistentVolume:
+    size: 50Gi
+
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      memory: 1.5Gi
+
+  zoneAwareReplication:
+    enabled: false
+
+  nodeSelector:
+    k8s.quandoo.com/arch: arm64
+    topology.kubernetes.io/zone: eu-west-1c
+
+  tolerations:
+    - key: k8s.quandoo.com/arch
+      operator: Equal
+      value: arm64
+      effect: NoSchedule
+
+compactor:
+  replicas: 2
+
+  persistentVolume:
+    size: 50Gi
+
+  resources:
+    requests:
+      cpu: 1.5
+      memory: 512Mi
+    limits:
+      memory: 1Gi
+
+  nodeSelector:
+    k8s.quandoo.com/arch: arm64
+    topology.kubernetes.io/zone: eu-west-1c
+
+  tolerations:
+    - key: k8s.quandoo.com/arch
+      operator: Equal
+      value: arm64
+      effect: NoSchedule
+
+memcached:
+  image:
+    repository: public.ecr.aws/docker/library/memcached
+    tag: 1.6.38-alpine
+
+memcachedExporter:
+  enabled: false
+
+chunks-cache:
+  enabled: true
+  replicas: 2
+
+  nodeSelector:
+    k8s.quandoo.com/arch: arm64
+    topology.kubernetes.io/zone: eu-west-1c
+
+  tolerations:
+    - key: k8s.quandoo.com/arch
+      operator: Equal
+      value: arm64
+      effect: NoSchedule
+
+index-cache:
+  enabled: true
+  replicas: 2
+
+  nodeSelector:
+    k8s.quandoo.com/arch: arm64
+    topology.kubernetes.io/zone: eu-west-1c
+
+  tolerations:
+    - key: k8s.quandoo.com/arch
+      operator: Equal
+      value: arm64
+      effect: NoSchedule
+
+metadata-cache:
+  enabled: true
+  replicas: 2
+
+  nodeSelector:
+    k8s.quandoo.com/arch: arm64
+    topology.kubernetes.io/zone: eu-west-1c
+
+  tolerations:
+    - key: k8s.quandoo.com/arch
+      operator: Equal
+      value: arm64
+      effect: NoSchedule
+
+results-cache:
+  enabled: true
+  replicas: 2
+
+  nodeSelector:
+    k8s.quandoo.com/arch: arm64
+    topology.kubernetes.io/zone: eu-west-1c
+
+  tolerations:
+    - key: k8s.quandoo.com/arch
+      operator: Equal
+      value: arm64
+      effect: NoSchedule
+
+rollout_operator:
+  enabled: true
+
+  nodeSelector:
+    k8s.quandoo.com/arch: arm64
+    topology.kubernetes.io/zone: eu-west-1c
+
+  tolerations:
+    - key: k8s.quandoo.com/arch
+      operator: Equal
+      value: arm64
+      effect: NoSchedule
+
+minio:
+  enabled: false
+
+nginx:
+  enabled: false
+
+gateway:
+  enabledNonEnterprise: true
+  replicas: 2
+
+  ingress:
+    enabled: true
+    ingressClassName: alb
+
+    annotations:
+      alb.ingress.kubernetes.io/group.name: devops-services
+      alb.ingress.kubernetes.io/scheme: internet-facing
+      alb.ingress.kubernetes.io/target-type: ip
+      alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS": 443}]'
+      alb.ingress.kubernetes.io/healthcheck-path: /
+      alb.ingress.kubernetes.io/ssl-redirect: '443'
+
+    hosts:
+      - host: mimir-gateway.svc.quandoo.com
+        paths:
+          - path: /
+            pathType: Prefix
+
+    tls:
+      - hosts:
+          - mimir-gateway.svc.quandoo.com
+
+  nginx:
+    config:
+      httpSnippet: |
+        large_client_header_buffers 8 64k;
+        client_header_buffer_size 64k;
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 64Mi
+    limits:
+      memory: 512Mi
+
+  nodeSelector:
+    k8s.quandoo.com/arch: arm64
+    topology.kubernetes.io/zone: eu-west-1c
+
+  tolerations:
+    - key: k8s.quandoo.com/arch
+      operator: Equal
+      value: arm64
+      effect: NoSchedule
+
+metaMonitoring:
+  serviceMonitor:
+    enabled: true
+    interval: 15s
+
