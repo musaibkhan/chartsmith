@@ -23,13 +23,10 @@ def detect_wrapper(user_values: dict, upstream_values: dict | Path) -> str | Non
 
     upstream_keys = set(upstream_values.keys()) if isinstance(upstream_values, dict) else set()
     user_keys = set(user_values.keys())
-    overlap = user_keys & upstream_keys
+    top_overlap = len(user_keys & upstream_keys)
 
-    if overlap:
-        # User values are already at chart level — no wrapper
-        return None
-
-    # Try every top-level key — pick the one whose children overlap upstream most.
+    # Best single-key wrapper candidate: the top-level key whose *children*
+    # overlap the upstream chart's keys the most.
     best_key, best_score = None, 0
     for k, v in user_values.items():
         if not isinstance(v, dict):
@@ -37,6 +34,18 @@ def detect_wrapper(user_values: dict, upstream_values: dict | Path) -> str | Non
         score = len(set(v.keys()) & upstream_keys)
         if score > best_score:
             best_key, best_score = k, score
+
+    # Unwrap when a single key's children match the chart notably better than
+    # the top-level keys do. This handles umbrella charts whose dependency name
+    # collides with a real chart key — e.g. a "loki" dependency wrapping the loki
+    # chart, which itself has a top-level "loki" block. Without this, the lone
+    # "loki" overlap would be mistaken for "already at chart level".
+    if best_key is not None and best_score > top_overlap:
+        return best_key
+
+    # User's top-level keys already match the chart → not wrapped.
+    if top_overlap:
+        return None
 
     return best_key if best_score > 0 else None
 

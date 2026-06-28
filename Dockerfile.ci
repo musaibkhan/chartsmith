@@ -1,0 +1,32 @@
+FROM python:3.11-slim
+
+ENV PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1 HELM_CACHE_DIR=/var/cache/helm
+
+# Install helm + git (git needed for detect-bump)
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends curl git ca-certificates tar gzip; \
+    ARCH=$(dpkg --print-architecture); \
+    case "$ARCH" in \
+      amd64) HELM_ARCH="amd64" ;; \
+      arm64) HELM_ARCH="arm64" ;; \
+      armhf) HELM_ARCH="arm"   ;; \
+      *)     echo "Unsupported arch: $ARCH" && exit 1 ;; \
+    esac; \
+    curl -fsSL "https://get.helm.sh/helm-v3.16.0-linux-${HELM_ARCH}.tar.gz" | tar xz; \
+    mv "linux-${HELM_ARCH}/helm" /usr/local/bin/helm; \
+    rm -rf "linux-${HELM_ARCH}"; \
+    test -x /usr/local/bin/helm; \
+    apt-get clean; rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY backend/pyproject.toml ./
+COPY backend/src ./src
+
+RUN pip install --upgrade pip && pip install -e .
+
+RUN mkdir -p /var/cache/helm
+
+ENTRYPOINT ["chartsmith"]
+CMD ["--help"]

@@ -103,6 +103,7 @@ async def analyze(req: AnalyzeRequest):
                 old_yaml=raw.get("old_yaml", ""),
                 new_yaml=raw.get("new_yaml", ""),
                 note=raw.get("note"),
+                action=raw.get("action"),
             ))
         except Exception as e:
             print(f"[WARN] Skipped change: {e}")

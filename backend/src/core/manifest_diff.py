@@ -82,35 +82,172 @@ def parse_manifests(raw_yaml: str) -> dict[ResourceKey, tuple[dict, str]]:
     return objects
 
 
-def _severity(change_type: str, kind: str, old_doc: dict | None, new_doc: dict | None) -> str:
-    if change_type == "deprecated_api":
-        return "critical"
-    if change_type == "removed":
-        if kind in STATEFUL_KINDS:
-            return "critical"
-        if kind in ("Deployment", "DaemonSet", "Ingress"):
-            return "critical"
-        if kind == "Service":
-            return "high"
-        return "medium"
+# ── K8s-aware severity rules ────────────────────────────────────────────────
+# Immutable fields whose change risks data loss / forces recreation.
+_DATA_RISK_FIELDS = {
+    "StatefulSet": ["volumeClaimTemplates", "serviceName", "podManagementPolicy"],
+}
+# Immutable fields whose change requires delete+recreate (no data risk).
+_IMMUTABLE_FIELDS = {
+    "StatefulSet": ["selector"],
+    "Deployment":  ["selector"],
+    "DaemonSet":   ["selector"],
+    "Service":     ["clusterIP"],
+}
+# Path fragments considered cosmetic — changes confined to these don't break anything.
+_COSMETIC_MARKERS = (
+    "['labels']", "['annotations']", "['securityContext']", "['seccompProfile']",
+    "helm.sh/chart", "app.kubernetes.io/version", "app.kubernetes.io/managed-by",
+)
+_WORKLOADS = ("StatefulSet", "Deployment", "DaemonSet")
+_STORAGE_KINDS = ("StatefulSet", "PersistentVolumeClaim", "PersistentVolume")
+
+
+def _changed_paths(diff) -> list[str]:
+    """All DeepDiff paths touched, as 'root[...]' strings."""
+    paths: list[str] = []
+    for cat in ("values_changed", "type_changes"):
+        if cat in diff:
+            paths.extend(str(p) for p in diff[cat].keys())
+    for cat in ("dictionary_item_added", "dictionary_item_removed",
+                "iterable_item_added", "iterable_item_removed"):
+        if cat in diff:
+            paths.extend(str(p) for p in diff[cat])
+    return paths
+
+
+def _has(paths: list[str], needle: str) -> bool:
+    return any(needle in p for p in paths)
+
+
+def _real_clusterip_change(old_doc, new_doc) -> bool:
+    """clusterIP in `helm template` output flips between None/absent for headless
+    services — that's a rendering artifact, not a real immutable change. Only treat
+    it as real when both sides are concrete, distinct values."""
+    norm = lambda v: None if v in (None, "", "None") else v
+    o = norm(((old_doc or {}).get("spec") or {}).get("clusterIP"))
+    n = norm(((new_doc or {}).get("spec") or {}).get("clusterIP"))
+    return o is not None and n is not None and o != n
+
+
+def _crd_versions(doc) -> list[str]:
+    spec = (doc or {}).get("spec") or {}
+    return [v.get("name") for v in (spec.get("versions") or []) if isinstance(v, dict) and v.get("name")]
+
+
+def _assess_crd(change_type, old_doc, new_doc):
+    """CRDs have special upgrade semantics: Helm installs them once and never upgrades
+    them in place, and removing one cascade-deletes every custom resource of that type."""
     if change_type == "added":
-        if kind in STATEFUL_KINDS:
-            return "critical"
+        return "high", ("New CRD — Helm/ArgoCD may not install it automatically before the "
+                        "controller starts. Confirm it is applied (ArgoCD CRD sync hook or "
+                        "`kubectl apply -f <crd>`).")
+    if change_type == "removed":
+        return "critical", ("CRD removed — deleting a CRD cascade-deletes every custom resource of "
+                           "that type. Confirm this is intentional and back up affected CRs first.")
+    # modified
+    old_v, new_v = set(_crd_versions(old_doc)), set(_crd_versions(new_doc))
+    added, removed = new_v - old_v, old_v - new_v
+    extra = ""
+    if added:
+        extra += f" New API version(s): {', '.join(sorted(added))}."
+    if removed:
+        extra += f" Removed API version(s): {', '.join(sorted(removed))}."
+    return "critical", ("CRD schema/version changed — Helm does NOT upgrade CRDs in place, so the new "
+                       "schema will not apply on `helm upgrade`/ArgoCD sync." + extra +
+                       " Apply it manually before rollout: `kubectl apply -f <crd>` "
+                       "(or enable an ArgoCD CRD sync hook).")
+
+
+def _assess(change_type, kind, old_doc, new_doc, diff=None, kind_replacement=False):
+    """Return (severity, action) — action is a one-line remediation hint or None."""
+    name = (new_doc or old_doc or {}).get("metadata", {}).get("name", "<name>")
+
+    if kind == "CustomResourceDefinition":
+        return _assess_crd(change_type, old_doc, new_doc)
+
+    if change_type == "deprecated_api":
+        oa = (old_doc or {}).get("apiVersion", "")
+        na = (new_doc or {}).get("apiVersion", "")
+        return "critical", (f"apiVersion {oa} → {na}: the old API is removed in current Kubernetes "
+                            f"versions — the resource will fail to apply until migrated.")
+
+    if change_type == "removed":
+        if kind in _STORAGE_KINDS:
+            return "critical", (f"{kind} removed — deleting it can destroy persistent data. "
+                               f"Confirm this is a rename, or back up/migrate volumes first.")
         if kind in ("Deployment", "DaemonSet"):
-            return "high"
-        return "safe"
-    if change_type == "modified":
-        if old_doc and new_doc:
-            old_api = old_doc.get("apiVersion", "")
-            new_api = new_doc.get("apiVersion", "")
-            if old_api != new_api:
-                return "critical" if old_api in DEPRECATED_APIS else "high"
-            if kind in STATEFUL_KINDS and old_doc.get("spec") != new_doc.get("spec"):
-                return "critical"
-            if old_doc.get("spec") != new_doc.get("spec"):
-                return "high"
-        return "medium"
-    return "medium"
+            if kind_replacement:
+                return "high", (f"{kind} removed, but other {kind}s exist in the new version — "
+                               f"likely renamed. Verify the replacement covers this workload.")
+            return "critical", f"{kind} removed and not replaced — this workload will be deleted (downtime)."
+        if kind in ("PodDisruptionBudget", "HorizontalPodAutoscaler"):
+            if kind_replacement:
+                return "high", (f"{kind} removed, but similar resources exist in the new version — "
+                               f"likely restructured (e.g. per-component). Verify the replacements "
+                               f"still cover the same workloads.")
+            return "critical", (f"{kind} removed with no replacement — availability/scaling protection "
+                               f"is lost on upgrade.")
+        if kind in ("Service", "Ingress"):
+            return "high", f"{kind} removed — its endpoints/DNS will disappear; check dependents."
+        if kind in ("ConfigMap", "Secret"):
+            if kind_replacement:
+                return "medium", None
+            return "high", (f"{kind} removed with no replacement — pods that mount it may fail to "
+                           f"start. Verify nothing references it.")
+        return "medium", None
+
+    if change_type == "added":
+        if kind in _STORAGE_KINDS:
+            return "medium", f"New {kind} introduced — new storage will be provisioned."
+        return "safe", None
+
+    # ── modified ──────────────────────────────────────────────────────────────
+    oa = (old_doc or {}).get("apiVersion", "")
+    na = (new_doc or {}).get("apiVersion", "")
+    if oa and na and oa != na:
+        if oa in DEPRECATED_APIS:
+            return "critical", (f"apiVersion {oa} → {na}: old API removed in current Kubernetes — "
+                               f"resource won't apply until migrated.")
+        return "high", f"apiVersion changed {oa} → {na}; confirm the cluster serves the new API."
+
+    paths = _changed_paths(diff or {})
+
+    for f in _DATA_RISK_FIELDS.get(kind, []):
+        if _has(paths, f"['{f}']"):
+            return "critical", (f"{kind} '{f}' changed — this field is immutable. The resource can't "
+                               f"update in place; recreate it (`kubectl delete {kind.lower()} {name} "
+                               f"--cascade=orphan`) to apply without data loss.")
+
+    if _has(paths, "['storageClassName']") or (_has(paths, "['storage']") and _has(paths, "['resources']")):
+        return "critical", ("PVC storage class/size changed — PVCs are immutable; this may require "
+                           "manual PVC recreation and data migration.")
+
+    for f in _IMMUTABLE_FIELDS.get(kind, []):
+        if _has(paths, f"['{f}']"):
+            if f == "clusterIP" and not _real_clusterip_change(old_doc, new_doc):
+                continue  # None/absent headless rendering artifact, not a real change
+            return "critical", (f"{kind} '{f}' is immutable — applying this requires deleting and "
+                               f"recreating the resource.")
+
+    # Cosmetic-only change (labels/annotations/securityContext/chart-version)?
+    non_cosmetic = [p for p in paths if not any(c in p for c in _COSMETIC_MARKERS)]
+    if paths and not non_cosmetic:
+        return "safe", None
+
+    if kind == "Service":
+        if _has(paths, "['type']"):
+            return "high", "Service type changed — how the service is exposed changes; verify clients."
+        if _has(paths, "['ports']"):
+            return "medium", "Service ports changed — verify dependents use the new ports."
+        return "medium", None
+
+    if kind in _WORKLOADS:
+        if _has(paths, "['replicas']"):
+            return "high", "Replica count changed — running capacity will change on upgrade."
+        return "medium", None  # rolling update (image/env/SA/resources) — expected churn, no data risk
+
+    return "medium", None
 
 
 def _explain_diff(diff: dict) -> str:
@@ -155,9 +292,10 @@ def compare_manifests(old_yaml: str, new_yaml: str) -> list[dict]:
             continue
 
         change_type = "deprecated_api" if is_deprecated else "modified"
+        severity, action = _assess(change_type, key.kind, old_doc, new_doc, diff)
         changes.append({
             "change_type": change_type,
-            "severity": _severity(change_type, key.kind, old_doc, new_doc),
+            "severity": severity,
             "kind": key.kind,
             "name": key.name,
             "namespace": key.namespace,
@@ -169,6 +307,7 @@ def compare_manifests(old_yaml: str, new_yaml: str) -> list[dict]:
                 f"API changed {old_api} → {new_api}" if is_deprecated else _explain_diff(diff)
             ),
             "note": _explain_diff(diff),
+            "action": action,
         })
 
     # Group by kind for context notes
@@ -190,9 +329,11 @@ def compare_manifests(old_yaml: str, new_yaml: str) -> list[dict]:
             if new_same else
             f"{key.kind} no longer present in new chart version."
         )
+        severity, action = _assess("removed", key.kind, old_doc, None,
+                                   kind_replacement=bool(new_same))
         changes.append({
             "change_type": "removed",
-            "severity": _severity("removed", key.kind, old_doc, None),
+            "severity": severity,
             "kind": key.kind,
             "name": key.name,
             "namespace": key.namespace,
@@ -202,6 +343,7 @@ def compare_manifests(old_yaml: str, new_yaml: str) -> list[dict]:
             "new_yaml": "",
             "title": f"{key.kind}/{key.name} removed",
             "note": note,
+            "action": action,
         })
 
     # Pass 3: unmatched new → added
@@ -214,9 +356,10 @@ def compare_manifests(old_yaml: str, new_yaml: str) -> list[dict]:
             if old_same else
             f"Brand new {key.kind} introduced in this chart version."
         )
+        severity, action = _assess("added", key.kind, None, new_doc)
         changes.append({
             "change_type": "added",
-            "severity": _severity("added", key.kind, None, new_doc),
+            "severity": severity,
             "kind": key.kind,
             "name": key.name,
             "namespace": key.namespace,
@@ -226,6 +369,7 @@ def compare_manifests(old_yaml: str, new_yaml: str) -> list[dict]:
             "new_yaml": new_raw,   # ← raw text
             "title": f"{key.kind}/{key.name} added",
             "note": note,
+            "action": action,
         })
 
     order = {"critical": 0, "high": 1, "medium": 2, "safe": 3}

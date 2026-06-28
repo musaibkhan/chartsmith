@@ -1,0 +1,173 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# ChartSmith — GitLab CI upgrade gate
+#
+# HOW TO USE
+# ──────────
+# 1. Build & push the CLI image from the chartsmith repo:
+#
+#      docker build -f Dockerfile.ci -t registry.example.com/your-org/chartsmith-cli:latest .
+#      docker push registry.example.com/your-org/chartsmith-cli:latest
+#
+# 2. In the repo that contains your Helm values / ArgoCD Applications / helmfile:
+#
+#      include:
+#        - project: 'your-group/chartsmith'
+#          file: '.gitlab/chartsmith.yml'
+#
+#      chartsmith-upgrade-gate:
+#        extends: .chartsmith-upgrade-gate
+#        variables:
+#          CHARTSMITH_IMAGE: registry.example.com/your-org/chartsmith-cli:latest
+#          CHARTSMITH_FAIL_ON: critical    # none | critical | high | medium | safe
+#
+# For a mono-repo of services (argocd-services-manifests/<service>/Chart.yaml +
+# values.yaml), you DON'T need to set a values path — ChartSmith derives it from
+# each changed Chart.yaml's own directory (loki/Chart.yaml → loki/values.yaml).
+# This means one or many services bumped in the same MR are each analysed against
+# their own values file automatically.
+#
+# 3. Expose $GITLAB_TOKEN as a masked CI variable (needs api scope for MR comments).
+#    $CI_JOB_TOKEN works too but only within the same project.
+#
+# VARIABLES (all optional — sane defaults provided)
+# ──────────────────────────────────────────────────
+#   CHARTSMITH_IMAGE       Image to use (must have helm + chartsmith CLI)
+#   CHARTSMITH_VALUES      Explicit values path (overrides auto-derive; for single-service
+#                          repos or non-standard layouts). Leave unset for mono-repos.
+#   CHARTSMITH_VALUES_FILE Values filename to look for next to Chart.yaml (default: values.yaml)
+#   CHARTSMITH_FAIL_ON     Severity level that blocks the pipeline  (default: critical)
+#   CHARTSMITH_CONTEXT     plain | argocd | umbrella | helmfile     (default: plain)
+#   CHARTSMITH_SEARCH      Directory to search for changed YAML files (default: .)
+#   GITLAB_TOKEN           Personal/project token for posting MR comments (optional)
+# ─────────────────────────────────────────────────────────────────────────────
+
+.chartsmith-upgrade-gate:
+  image: ${CHARTSMITH_IMAGE:-chartsmith-cli:latest}
+  stage: test
+
+  variables:
+    CHARTSMITH_VALUES:      ""             # empty = auto-derive <service>/values.yaml per bump
+    CHARTSMITH_VALUES_FILE: "values.yaml"
+    CHARTSMITH_FAIL_ON:     "critical"
+    CHARTSMITH_CONTEXT:     "plain"
+    CHARTSMITH_SEARCH:      "."
+    GIT_DEPTH:              "0"      # full clone so detect-bump can read base ref
+
+  script:
+    - |
+      echo "==> ChartSmith: detecting chart version bumps..."
+      chartsmith detect-bump \
+        --base-ref  "${CI_MERGE_REQUEST_DIFF_BASE_SHA}" \
+        --head-ref  "${CI_COMMIT_SHA}" \
+        --path      "${CHARTSMITH_SEARCH}" \
+        --format    json \
+        > /tmp/bumps.json
+
+      BUMP_COUNT=$(python3 -c "import json,sys; print(len(json.load(open('/tmp/bumps.json'))))")
+      echo "  Found ${BUMP_COUNT} chart version bump(s)."
+      cat /tmp/bumps.json
+
+    - |
+      python3 - <<'PYEOF'
+      import json, os, subprocess, sys, urllib.parse, urllib.request
+
+      bumps = json.load(open("/tmp/bumps.json"))
+      if not bumps:
+          print("✅ No chart version bumps detected in this MR — skipping analysis.")
+          sys.exit(0)
+
+      fail_on        = os.getenv("CHARTSMITH_FAIL_ON", "critical")
+      context        = os.getenv("CHARTSMITH_CONTEXT", "plain")
+      values_file    = os.getenv("CHARTSMITH_VALUES_FILE", "values.yaml")
+      values_override = os.getenv("CHARTSMITH_VALUES", "").strip()
+
+      def resolve_values(bump):
+          # Explicit override always wins (single-service repos / non-standard layout).
+          if values_override:
+              return values_override
+          # Otherwise derive from the changed file's own directory:
+          #   loki/Chart.yaml  →  loki/values.yaml
+          src_dir = os.path.dirname(bump.get("source_file", ""))
+          return os.path.join(src_dir, values_file) if src_dir else values_file
+
+      reports   = []
+      exit_code = 0
+
+      for bump in bumps:
+          print(f"\n==> Analysing {bump['chart']}  {bump['from_version']} → {bump['to_version']}")
+
+          values = resolve_values(bump)
+          if not os.path.exists(values):
+              msg = (f"⚠️ Skipped `{bump['chart']}` — no values file at `{values}`. "
+                     f"Set `CHARTSMITH_VALUES` or `CHARTSMITH_VALUES_FILE` if your layout differs.")
+              print(msg, file=sys.stderr)
+              reports.append(f"## ChartSmith: `{bump['chart']}`\n\n{msg}")
+              continue
+          print(f"    using values: {values}")
+
+          cmd = [
+              "chartsmith", "analyze",
+              "--chart",        bump["chart"],
+              "--from-version", bump["from_version"],
+              "--to-version",   bump["to_version"],
+              "--values",       values,
+              "--context",      context,
+              "--fail-on",      fail_on,
+              "--format",       "markdown",
+          ]
+          if bump.get("repo_name"):
+              cmd += ["--repo-name", bump["repo_name"]]
+          if bump.get("repo_url"):
+              cmd += ["--repo-url",  bump["repo_url"]]
+          if bump.get("wrapper_key"):
+              cmd += ["--wrapper-key", bump["wrapper_key"]]
+
+          result = subprocess.run(cmd, capture_output=True, text=True)
+          print(result.stdout)
+          if result.stderr:
+              print(result.stderr, file=sys.stderr)
+
+          reports.append(result.stdout)
+          if result.returncode == 1:
+              exit_code = 1       # blocked
+          elif result.returncode == 2 and exit_code == 0:
+              exit_code = 2       # error (don't downgrade a block)
+
+      report_body = "\n\n---\n\n".join(reports)
+      open("chartsmith-report.md", "w").write(report_body)
+
+      # ── Post to MR as a comment ────────────────────────────────────────────
+      gl_token = os.getenv("GITLAB_TOKEN") or os.getenv("CI_JOB_TOKEN")
+      mr_iid   = os.getenv("CI_MERGE_REQUEST_IID")
+      project  = os.getenv("CI_PROJECT_ID")
+      api_url  = os.getenv("CI_API_V4_URL", "https://gitlab.com/api/v4")
+
+      if gl_token and mr_iid and project:
+          url  = f"{api_url}/projects/{project}/merge_requests/{mr_iid}/notes"
+          data = urllib.parse.urlencode({"body": report_body}).encode()
+          req  = urllib.request.Request(
+              url, data=data, method="POST",
+              headers={"PRIVATE-TOKEN": gl_token, "Content-Type": "application/x-www-form-urlencoded"},
+          )
+          try:
+              urllib.request.urlopen(req, timeout=10)
+              print("\n📝 ChartSmith report posted to MR.")
+          except Exception as e:
+              print(f"\n⚠️  Could not post MR comment: {e}", file=sys.stderr)
+      else:
+          print("\nℹ️  GITLAB_TOKEN / MR context not set — skipping MR comment.")
+
+      sys.exit(exit_code)
+      PYEOF
+
+  artifacts:
+    when: always
+    paths:
+      - chartsmith-report.md
+    expose_as: "ChartSmith report"
+    expire_in: 14 days
+
+  allow_failure: false
+
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"

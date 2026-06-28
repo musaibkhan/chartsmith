@@ -40,6 +40,7 @@ class ResourceChange(BaseModel):
     old_yaml: str = ""          # Full old resource YAML
     new_yaml: str = ""          # Full new resource YAML
     note: str | None = None     # Extra context
+    action: str | None = None   # Remediation hint for high-risk changes
 
 
 class ReportStats(BaseModel):
