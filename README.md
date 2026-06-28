@@ -98,7 +98,7 @@ flowchart TD
 **Just use the published image** — no build required. It's public on GHCR:
 
 ```
-ghcr.io/musaib001/chartsmith-cli:v0.1.0
+ghcr.io/musaibkhan/chartsmith-cli:v0.1.0
 ```
 
 Reference it in your pipeline (see integration examples below). Pin a version tag rather than
@@ -109,8 +109,8 @@ Reference it in your pipeline (see integration examples below). Pin a version ta
 
 ```bash
 # CI runners are linux/amd64 — build for that arch
-podman build --platform linux/amd64 -f Dockerfile.ci -t ghcr.io/musaib001/chartsmith-cli:v0.1.0 .
-podman push ghcr.io/musaib001/chartsmith-cli:v0.1.0
+podman build --platform linux/amd64 -f Dockerfile.ci -t ghcr.io/musaibkhan/chartsmith-cli:v0.1.0 .
+podman push ghcr.io/musaibkhan/chartsmith-cli:v0.1.0
 ```
 
 > **Apple Silicon note:** build with `--platform linux/amd64`. Don't run helm during the build —
@@ -126,7 +126,7 @@ podman push ghcr.io/musaib001/chartsmith-cli:v0.1.0
 stages: [chartsmith]
 
 chartsmith-analyze:
-  image: ghcr.io/musaib001/chartsmith-cli:v0.1.0
+  image: ghcr.io/musaibkhan/chartsmith-cli:v0.1.0
   stage: chartsmith
   rules:
     - if: $CI_PIPELINE_SOURCE == 'merge_request_event'
@@ -162,7 +162,7 @@ jobs:
           docker run --rm -v "$PWD:/repo" -w /repo \
             -e GITHUB_ACTIONS -e GITHUB_REPOSITORY -e GITHUB_REF \
             -e GITHUB_SHA -e GITHUB_BASE_REF -e GITHUB_TOKEN \
-            ghcr.io/musaib001/chartsmith-cli:v0.1.0 ci --fail-on none
+            ghcr.io/musaibkhan/chartsmith-cli:v0.1.0 ci --fail-on none
 ```
 
 On GitHub the full markdown report is posted **inline** in the PR comment (GitHub renders
