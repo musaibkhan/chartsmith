@@ -54,22 +54,30 @@ and merge blind today. ChartSmith runs as a single CLI inside your pipeline, aut
 
 ## How it works
 
-```
- MR/PR bumps a chart version
-            │
-            ▼
-   chartsmith ci  (in CI)
-            │
-   ┌────────┴─────────┐
-   │ 1. detect-bump   │  Chart.yaml deps · ArgoCD Application · helmfile
-   │ 2. helm pull ×2  │  old + new version
-   │ 3. helm template │  rendered with YOUR values (wrapper auto-unwrapped)
-   │ 4. diff + assess │  K8s-aware severity + action hints
-   │ 5. render HTML   │  + post MR/PR comment
-   └──────────────────┘
-            │
-            ▼
-   HTML artifact  +  MR/PR comment  +  exit code (gate)
+```mermaid
+flowchart TD
+    A(["🔀 MR/PR bumps a chart version"]) --> B(["⚙️ chartsmith ci runs in your pipeline"])
+
+    B --> C
+
+    subgraph C ["🛠️ ChartSmith pipeline"]
+        direction TB
+        C1["🔍 <b>detect-bump</b><br/><i>Chart.yaml deps · ArgoCD Application · helmfile</i>"]
+        C2["⬇️ <b>helm pull ×2</b><br/><i>old + new version</i>"]
+        C3["📄 <b>helm template</b><br/><i>rendered with YOUR values · wrapper auto-unwrapped</i>"]
+        C4["⚖️ <b>diff + assess</b><br/><i>K8s-aware severity + action hints</i>"]
+        C5["🎨 <b>render HTML</b>"]
+        C1 --> C2 --> C3 --> C4 --> C5
+    end
+
+    C --> D["📊 HTML artifact"]
+    C --> E["💬 MR/PR comment"]
+    C --> F["🚦 exit code (merge gate)"]
+
+    classDef io fill:#1C2230,stroke:#FF6B2C,stroke-width:2px,color:#E6E8EC;
+    classDef out fill:#161A22,stroke:#3DDC97,stroke-width:1.5px,color:#E6E8EC;
+    class A,B io;
+    class D,E,F out;
 ```
 
 ---
