@@ -95,16 +95,27 @@ flowchart TD
 
 ## Install
 
-Build and push the CI image (multi-arch note below):
+**Just use the published image** — no build required. It's public on GHCR:
+
+```
+ghcr.io/musaib001/chartsmith-cli:v-0.13
+```
+
+Reference it in your pipeline (see integration examples below). Pin a version tag rather than
+`latest` so CI is reproducible and runners don't serve a stale cache.
+
+<details>
+<summary><b>Build your own</b> (private registry, air-gapped, or forking)</summary>
 
 ```bash
-# Build for the CI runner's arch (GitLab/GitHub runners are linux/amd64)
-podman build --platform linux/amd64 -f Dockerfile.ci -t ghcr.io/<you>/chartsmith-cli:latest .
-podman push ghcr.io/<you>/chartsmith-cli:latest
+# CI runners are linux/amd64 — build for that arch
+podman build --platform linux/amd64 -f Dockerfile.ci -t ghcr.io/musaib001/chartsmith-cli:v-0.13 .
+podman push ghcr.io/musaib001/chartsmith-cli:v-0.13
 ```
 
 > **Apple Silicon note:** build with `--platform linux/amd64`. Don't run helm during the build —
 > Go binaries crash under QEMU emulation. The image only runs natively on amd64 runners.
+</details>
 
 ---
 
@@ -115,7 +126,7 @@ podman push ghcr.io/<you>/chartsmith-cli:latest
 stages: [chartsmith]
 
 chartsmith-analyze:
-  image: ghcr.io/<you>/chartsmith-cli:latest
+  image: ghcr.io/musaib001/chartsmith-cli:v-0.13
   stage: chartsmith
   rules:
     - if: $CI_PIPELINE_SOURCE == 'merge_request_event'
@@ -151,7 +162,7 @@ jobs:
           docker run --rm -v "$PWD:/repo" -w /repo \
             -e GITHUB_ACTIONS -e GITHUB_REPOSITORY -e GITHUB_REF \
             -e GITHUB_SHA -e GITHUB_BASE_REF -e GITHUB_TOKEN \
-            ghcr.io/<you>/chartsmith-cli:latest ci --fail-on none
+            ghcr.io/musaib001/chartsmith-cli:v-0.13 ci --fail-on none
 ```
 
 On GitHub the full markdown report is posted **inline** in the PR comment (GitHub renders
