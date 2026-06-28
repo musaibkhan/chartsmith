@@ -1,0 +1,5 @@
+<svg width="180" height="48" viewBox="0 0 180 48" xmlns="http://www.w3.org/2000/svg">
+  <path d="M4 34 L20 8 L36 34 L28 34 L20 21 L12 34 Z" fill="none" stroke="#FF6B2C" stroke-width="2.5" stroke-linejoin="round"/>
+  <path d="M12 34 L20 42 L28 34" fill="none" stroke="#E6E8EC" stroke-width="2.5" stroke-linejoin="round"/>
+  <text x="48" y="32" font-family="'Space Grotesk', Arial, sans-serif" font-size="26" font-weight="600" fill="#E6E8EC">Chart<tspan fill="#FF6B2C">Smith</tspan></text>
+</svg>
