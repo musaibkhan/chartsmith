@@ -48,6 +48,8 @@ and merge blind today. ChartSmith runs as a single CLI inside your pipeline, aut
 - 🎨 **Styled HTML report** — dark-themed, filterable by severity, collapsible per-resource diffs. Opens in a new tab.
 - 🔌 **GitLab & GitHub** — one binary, auto-detects the platform and posts to the MR/PR.
 - 🧩 **Umbrella / ArgoCD aware** — auto-detects and unwraps dependency-wrapped values (umbrella subchart wrappers, ArgoCD `Application`, helmfile).
+- 🪆 **Umbrella render parity** — `--render-mode umbrella` renders your actual chart dir (parent + dependency) base-vs-head, matching exactly what ArgoCD/Helm deploys — no missing subchart resources.
+- ⚠️ **Values-deprecation detection** — flags `values.yaml` keys you set that **no longer exist** in the new chart version (silently ignored otherwise), in both plain and umbrella mode.
 - 🚦 **Merge gate** — `--fail-on` exits non-zero on a chosen severity, so CI can block risky merges.
 
 ---
@@ -98,7 +100,7 @@ flowchart TD
 **Just use the published image** — no build required. It's public on GHCR:
 
 ```
-ghcr.io/musaibkhan/chartsmith-cli:v0.1.0
+ghcr.io/musaibkhan/chartsmith-cli:latest
 ```
 
 Reference it in your pipeline (see integration examples below). Pin a version tag rather than
@@ -109,8 +111,8 @@ Reference it in your pipeline (see integration examples below). Pin a version ta
 
 ```bash
 # CI runners are linux/amd64 — build for that arch
-podman build --platform linux/amd64 -f Dockerfile.ci -t ghcr.io/musaibkhan/chartsmith-cli:v0.1.0 .
-podman push ghcr.io/musaibkhan/chartsmith-cli:v0.1.0
+podman build --platform linux/amd64 -f Dockerfile.ci -t ghcr.io/musaibkhan/chartsmith-cli:latest .
+podman push ghcr.io/musaibkhan/chartsmith-cli:latest
 ```
 
 > **Apple Silicon note:** build with `--platform linux/amd64`. Don't run helm during the build —
@@ -126,7 +128,7 @@ podman push ghcr.io/musaibkhan/chartsmith-cli:v0.1.0
 stages: [chartsmith]
 
 chartsmith-analyze:
-  image: ghcr.io/musaibkhan/chartsmith-cli:v0.1.0
+  image: ghcr.io/musaibkhan/chartsmith-cli:latest
   stage: chartsmith
   rules:
     - if: $CI_PIPELINE_SOURCE == 'merge_request_event'
@@ -162,7 +164,7 @@ jobs:
           docker run --rm -v "$PWD:/repo" -w /repo \
             -e GITHUB_ACTIONS -e GITHUB_REPOSITORY -e GITHUB_REF \
             -e GITHUB_SHA -e GITHUB_BASE_REF -e GITHUB_TOKEN \
-            ghcr.io/musaibkhan/chartsmith-cli:v0.1.0 ci --fail-on none
+            ghcr.io/musaibkhan/chartsmith-cli:latest ci --fail-on none
 ```
 
 On GitHub the full markdown report is posted **inline** in the PR comment (GitHub renders
@@ -245,8 +247,9 @@ a high-risk upgrade still shows "Informational" if you haven't enabled the gate.
 
 ## Versioning
 
-Published as versioned tags (current: `v0.1.0`). Pin a specific tag in CI rather than `latest`
-so builds are reproducible and runners don't serve a stale cached image.
+Published as versioned image tags — see the [Releases](https://github.com/musaibkhan/chartsmith/releases)
+page for the current version. Pin a specific tag in CI rather than `latest` so builds are
+reproducible and runners don't serve a stale cached image.
 
 ---
 

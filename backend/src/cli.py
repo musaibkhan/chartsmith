@@ -402,8 +402,10 @@ async def _analyze_one(*, chart, from_version, to_version, values,
         new_cv = yaml.safe_load((new_dir / "values.yaml").read_text()) or {}
         user_unwrapped = unwrap_values(values_yaml, wrapper) if wrapper else user_top
         sdiff = schema_diff(old_cv, new_cv)
+        # Only flag keys the new chart genuinely dropped (silently ignored overrides).
+        # type/default changes on chart defaults are noise — the user's value still applies.
         value_warnings = [a for a in affected_user_keys(user_unwrapped if isinstance(user_unwrapped, dict) else {}, sdiff)
-                          if a["change_type"] in ("removed", "parent_removed", "type_changed")]
+                          if a["change_type"] in ("removed", "parent_removed")]
     except Exception as e:
         print(f"[WARN] values-deprecation check skipped: {e}", file=sys.stderr)
 
@@ -420,8 +422,45 @@ def _archive_base_dir(chart_dir_rel: str, base_ref: str) -> Path:
     return dest / chart_dir_rel
 
 
-async def _analyze_chart_dir(chart_dir_rel: str, base_ref: str):
-    """Umbrella mode: render the chart dir at base vs head (ArgoCD parity). Returns (stats, changes, [])."""
+def _subchart_values(chart_dir: Path, dep: str, version: str) -> dict:
+    """Read a subchart's default values.yaml from charts/ (extracted dir or downloaded .tgz)."""
+    charts = Path(chart_dir) / "charts"
+    extracted = charts / dep / "values.yaml"
+    if extracted.exists():
+        return yaml.safe_load(extracted.read_text()) or {}
+    tgz = charts / f"{dep}-{version}.tgz"
+    if tgz.exists():
+        import tarfile
+        with tarfile.open(tgz) as t:
+            try:
+                m = t.extractfile(f"{dep}/values.yaml")
+                return (yaml.safe_load(m.read()) or {}) if m else {}
+            except KeyError:
+                return {}
+    return {}
+
+
+def _umbrella_value_warnings(base_chart: Path, head_chart: Path, bump: dict) -> list[dict]:
+    try:  # ponytail: advisory — never fail the report on the values check
+        dep, fv, tv = bump["chart"], bump["from_version"], bump["to_version"]
+        old_cv = _subchart_values(base_chart, dep, fv)
+        new_cv = _subchart_values(head_chart, dep, tv)
+        if not old_cv or not new_cv:
+            return []
+        uvals = (head_chart / "values.yaml").read_text()
+        wk = bump.get("wrapper_key")
+        user_uw = unwrap_values(uvals, wk) if wk else (yaml.safe_load(uvals) or {})
+        sd = schema_diff(old_cv, new_cv)
+        return [a for a in affected_user_keys(user_uw if isinstance(user_uw, dict) else {}, sd)
+                if a["change_type"] in ("removed", "parent_removed")]
+    except Exception as e:
+        print(f"[WARN] umbrella values-check skipped: {e}", file=sys.stderr)
+        return []
+
+
+async def _analyze_chart_dir(bump: dict, base_ref: str):
+    """Umbrella mode: render the chart dir at base vs head (ArgoCD parity)."""
+    chart_dir_rel = os.path.dirname(bump["source_file"]) or "."
     await ensure_helm_ready()
     base_chart = _archive_base_dir(chart_dir_rel, base_ref)
     head_chart = Path(chart_dir_rel)
@@ -434,7 +473,8 @@ async def _analyze_chart_dir(chart_dir_rel: str, base_ref: str):
             raise RuntimeError(f"render failed ({label}):\n{m}")
     with contextlib.redirect_stdout(sys.stderr):
         changes = compare_manifests(old_m, new_m)
-    return compute_stats(changes), changes, []   # value-warnings: subchart mode only
+    value_warnings = _umbrella_value_warnings(base_chart, head_chart, bump)
+    return compute_stats(changes), changes, value_warnings
 
 
 async def _cmd_analyze(args: argparse.Namespace) -> int:
@@ -591,8 +631,7 @@ async def _cmd_ci(args: argparse.Namespace) -> int:
             continue
         try:
             if args.render_mode == "umbrella":
-                chart_dir_rel = os.path.dirname(b["source_file"]) or "."
-                stats, changes, vws = await _analyze_chart_dir(chart_dir_rel, base)
+                stats, changes, vws = await _analyze_chart_dir(b, base)
             else:
                 stats, changes, vws = await _analyze_one(
                     chart=b["chart"], from_version=b["from_version"], to_version=b["to_version"],
