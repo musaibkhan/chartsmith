@@ -110,6 +110,21 @@ async def pull_chart(chart: str, version: str, repo_url: str | None = None) -> P
     return chart_dir
 
 
+async def render_chart_dir(chart_dir: Path, release: str = "chartsmith") -> str:
+    """Render a local chart directory as-is (umbrella parent + its dependency),
+    matching what ArgoCD/Helm actually deploys. Fetches subchart deps first."""
+    # ponytail: skips sops-encrypted secrets.yaml; add a -f decrypt step if a chart
+    # needs decrypted values to render structure.
+    await _run("helm", "dependency", "update", str(chart_dir))  # non-fatal if no deps
+    base = ["helm", "template", release, str(chart_dir)]
+    code, out, err = await _run(*base)
+    if code != 0 and "schema" in err.lower():
+        code, out, err = await _run(*base, "--skip-schema-validation")
+    if code != 0:
+        return f"# RENDER ERROR\n{err}"
+    return out
+
+
 async def render_template(chart_dir: Path, values_path: Path) -> str:
     """Run `helm template` and return rendered manifest text.
 
