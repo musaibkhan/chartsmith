@@ -24,7 +24,7 @@ It's built for GitOps shops (ArgoCD / Flux / Renovate) where chart bumps land as
 and merge blind today. ChartSmith runs as a single CLI inside your pipeline, auto-detects
 **GitLab or GitHub**, and posts the report straight onto the MR/PR.
 
-> Born from LGTM-stack upgrade pain (Loki 6.x → 17.x is brutal), works on any Helm chart.
+> Works on any Helm chart — plain charts, umbrella/dependency charts, ArgoCD `Application`s, and helmfile.
 
 ---
 
@@ -36,7 +36,6 @@ and merge blind today. ChartSmith runs as a single CLI inside your pipeline, aut
 ![ChartSmith report](docs/screenshot-report.png)
 ![CI artifacts](docs/screenshot-artifacts.png)
 
-*(Drop your own PNGs at `docs/screenshot-report.png` and `docs/screenshot-artifacts.png`.)*
 
 ---
 
@@ -48,7 +47,7 @@ and merge blind today. ChartSmith runs as a single CLI inside your pipeline, aut
 - 🧬 **CRD change detection** — flags the silent Helm footgun: CRDs are installed once and **never upgraded** by `helm upgrade`/ArgoCD. CRD schema/version changes surface as **critical** with the manual `kubectl apply` fix.
 - 🎨 **Styled HTML report** — dark-themed, filterable by severity, collapsible per-resource diffs. Opens in a new tab.
 - 🔌 **GitLab & GitHub** — one binary, auto-detects the platform and posts to the MR/PR.
-- 🧩 **Umbrella / ArgoCD aware** — auto-detects and unwraps dependency-wrapped values (`loki:` wrappers, ArgoCD `Application`, helmfile).
+- 🧩 **Umbrella / ArgoCD aware** — auto-detects and unwraps dependency-wrapped values (umbrella subchart wrappers, ArgoCD `Application`, helmfile).
 - 🚦 **Merge gate** — `--fail-on` exits non-zero on a chosen severity, so CI can block risky merges.
 
 ---
@@ -172,9 +171,9 @@ Analyse a single explicit upgrade.
 
 ```bash
 chartsmith analyze \
-  --chart loki --from-version 6.46.0 --to-version 17.4.7 \
-  --repo-url https://grafana-community.github.io/helm-charts \
-  --values loki/values.yaml \
+  --chart <repo>/<chart> --from-version <old> --to-version <new> \
+  --repo-url https://charts.example.com \
+  --values values.yaml \
   --fail-on critical --format html > report.html
 ```
 Formats: `markdown` (default), `html`, `json`, `text`. Auto-detects the values wrapper key.
